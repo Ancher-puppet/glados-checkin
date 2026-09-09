@@ -1,0 +1,63 @@
+name: GLaDOS Daily Check-in
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7 9 * * *"
+      timezone: "Asia/Shanghai"
+
+permissions:
+  contents: read
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check in
+        env:
+          GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$GLADOS_COOKIE" ]; then
+            echo "GLADOS_COOKIE 未设置"
+            exit 1
+          fi
+
+          response=$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url "https://glados.rocks/api/user/checkin" \
+            --header "Content-Type: application/json" \
+            --header "Cookie: $GLADOS_COOKIE" \
+            --data '{"token":"glados.one"}')
+
+          echo "$response"
+
+          RESPONSE="$response" python3 -c '
+          import json
+          import os
+          import sys
+
+          data = json.loads(os.environ["RESPONSE"])
+          message = str(data.get("message") or data.get("msg") or "")
+          code = data.get("code")
+
+          success_words = (
+              "checkin",
+              "checked",
+              "already",
+              "tomorrow",
+              "签到",
+              "已签",
+          )
+
+          success = (
+              code in (0, 1)
+              or any(word in message.lower() for word in success_words)
+          )
+
+          print("GLaDOS:", message or data)
+          sys.exit(0 if success else 1)
+          '
