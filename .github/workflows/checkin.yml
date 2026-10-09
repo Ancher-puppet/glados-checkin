@@ -28,7 +28,7 @@ jobs:
 
           response=$(curl --fail-with-body --silent --show-error \
             --request POST \
-            --url "https://glados.rocks/api/user/checkin" \
+            --url "https://glados.cloud/api/user/checkin" \
             --header "Content-Type: application/json" \
             --header "Cookie: $GLADOS_COOKIE" \
             --data '{"token":"glados.one"}')
