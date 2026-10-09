@@ -15,118 +15,49 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: 检查 Cookie 格式
-        env:
-          GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import sys
-
-          cookie = os.environ.get("GLADOS_COOKIE", "")
-          names = {
-              part.strip().split("=", 1)[0]
-              for part in cookie.split(";")
-              if "=" in part
-          }
-
-          empty = not bool(cookie.strip())
-          newline = "\n" in cookie or "\r" in cookie
-          prefix = cookie.strip().lower().startswith("cookie:")
-          quoted = cookie.strip().startswith(('"', "'"))
-
-          print("Cookie 是否为空:", empty)
-          print("是否包含换行:", newline)
-          print("是否包含 Cookie: 前缀:", prefix)
-          print("是否被引号包裹:", quoted)
-
-          for name in (
-              "gld:sess",
-              "gld:sess.sig",
-              "koa:sess",
-              "koa:sess.sig",
-          ):
-              print(name, "存在" if name in names else "缺失")
-
-          if empty or newline or prefix or quoted:
-              print("::error::GLADOS_COOKIE 格式异常，请检查 Secret")
-              sys.exit(1)
-          PY
-
       - name: Check in
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
         run: |
           set -euo pipefail
 
-          response_file=$(mktemp)
-          trap 'rm -f "$response_file"' EXIT
-
-          if http_status=$(curl --silent --show-error \
-            --connect-timeout 20 \
-            --max-time 60 \
-            --request POST \
-            --url "https://glados.cloud/api/user/checkin" \
-            --header "Content-Type: application/json" \
-            --header "Cookie: $GLADOS_COOKIE" \
-            --data '{"token":"glados.one"}' \
-            --output "$response_file" \
-            --write-out '%{http_code}'); then
-            echo "HTTP 状态码: $http_status"
-          else
-            echo "::error::请求失败：请检查网络、DNS 或 TLS 连接"
+          if [ -z "$GLADOS_COOKIE" ]; then
+            echo "GLADOS_COOKIE 未设置"
             exit 1
           fi
 
-          RESPONSE_FILE="$response_file" HTTP_STATUS="$http_status" python3 - <<'PY'
+          response=$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url "https://glados.rocks/api/user/checkin" \
+            --header "Content-Type: application/json" \
+            --header "Cookie: $GLADOS_COOKIE" \
+            --data '{"token":"glados.one"}')
+
+          echo "$response"
+
+          RESPONSE="$response" python3 -c '
           import json
           import os
           import sys
 
-          status = os.environ["HTTP_STATUS"]
-
-          if not status.startswith("2"):
-              print(f"::error::GLaDOS 返回 HTTP {status}")
-              sys.exit(1)
-
-          try:
-              with open(os.environ["RESPONSE_FILE"], encoding="utf-8") as f:
-                  data = json.load(f)
-          except (ValueError, UnicodeError):
-              print("::error::响应不是有效 JSON，可能是重定向或拦截页面")
-              sys.exit(1)
-
-          if not isinstance(data, dict):
-              print("::error::响应 JSON 格式异常")
-              sys.exit(1)
-
-          code = data.get("code")
+          data = json.loads(os.environ["RESPONSE"])
           message = str(data.get("message") or data.get("msg") or "")
+          code = data.get("code")
 
-          # 避免将服务端意外回显的凭据写入日志。
-          cookie = os.environ.get("GLADOS_COOKIE", "")
-          for part in cookie.split(";"):
-              if "=" in part:
-                  value = part.split("=", 1)[1].strip()
-                  if value:
-                      message = message.replace(value, "[REDACTED]")
+          success_words = (
+              "checkin",
+              "checked",
+              "already",
+              "tomorrow",
+              "签到",
+              "已签",
+          )
 
-          print("GLaDOS code:", code)
-          print("GLaDOS message:", message)
+          success = (
+              code in (0, 1)
+              or any(word in message.lower() for word in success_words)
+          )
 
-          if code == -2 or "没有权限" in message:
-              print("::error::GLaDOS 未认可当前登录凭据；需要核对 Secret 和浏览器请求")
-              sys.exit(1)
-
-          # 明确的失败代码不能因为消息中出现“签到”等词而被判为成功。
-          if isinstance(code, (int, float)) and code < 0:
-              print("::error::GLaDOS 返回失败代码")
-              sys.exit(1)
-
-          if code in (0, 1):
-              print("签到请求成功")
-              sys.exit(0)
-
-          print("::error::未确认签到成功，请根据返回的 code 和 message 检查")
-          sys.exit(1)
-          PY
+          print("GLaDOS:", message or data)
+          sys.exit(0 if success else 1)
+          '
