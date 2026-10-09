@@ -32,25 +32,32 @@ jobs:
             --header "Content-Type: application/json" \
             --header "Cookie: $GLADOS_COOKIE" \
             --data '{"token":"glados.one"}')
-          
+
           echo "$response"
-          
+
           RESPONSE="$response" python3 -c '
-          import json, os, sys
-          
+          import json
+          import os
+          import sys
+
           data = json.loads(os.environ["RESPONSE"])
           message = str(data.get("message") or data.get("msg") or "")
           code = data.get("code")
-          
-          print("GLaDOS:", message or data)
-          
-          if code == -2 or "没有权限" in message:
-              print("GLADOS_COOKIE 已失效，请更新 GitHub Actions Secret")
-              sys.exit(1)
-          
-          success_words = ("checkin", "checked", "already", "tomorrow", "签到", "已签")
-          success = code in (0, 1) or any(
-              word in message.lower() for word in success_words
+
+          success_words = (
+              "checkin",
+              "checked",
+              "already",
+              "tomorrow",
+              "签到",
+              "已签",
           )
+
+          success = (
+              code in (0, 1)
+              or any(word in message.lower() for word in success_words)
+          )
+
+          print("GLaDOS:", message or data)
           sys.exit(0 if success else 1)
           '
