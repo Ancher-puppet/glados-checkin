@@ -1,30 +1,54 @@
-# glados-checkin
+# GLaDOS 每日自动签到
 
-通过 GitHub Actions 自动签到，默认每天北京时间 09:07 运行，也可手动触发。
+由 GitHub Actions 在云端运行，个人 Mac 无需开机。使用系统 Chrome 打开官方签到页，由原页面完成 challenge、proof 和 Cloudflare Turnstile；出现标准验证勾选框时，通过键盘操作后等待网站生成真实验证令牌。
 
-## 更新 Cookie 和 User-Agent
+**2026-11-15 已用本仓库账号完成云端严格测试：验证令牌存在、状态 `ok`，网站返回今日已签到，设备不匹配问题已解决。** 当天此前已手动签到，因此本次没有新增积分，次日首次自动到账仍待定时运行验收。不能把重复签到当作新奖励。
 
-出现 `GLaDOS code: -2` /「没有权限」时，通常是 Cookie 已失效或复制不完整。HTTP 200 只代表 HTTP 请求成功，不代表签到成功。
+## 运行时间
 
-1. 在浏览器中退出并重新登录 [GLaDOS](https://glados.cloud)，确认能正常访问账户页面。
-2. 打开开发者工具（F12 或右键「检查」）→ **Network / 网络**，刷新页面，选择一个发往 `glados.cloud`、携带登录 Cookie 的接口请求（通常在 **Fetch/XHR** 中）。
-3. 在 **Headers / 标头 → Request Headers / 请求标头** 中复制以下两个值，必须来自**同一个浏览器、同一次登录会话**：
+- 北京时间每天 **09:07** 首次运行。
+- **15:17、21:27** 自动补漏；先核对当天签到流水，已签到就直接退出，不重复提交。
+- 每月 1 日执行一次保活提交，减少公开仓库因长期没有活动而被停用定时任务的问题。
 
-   | Secret 名称 | 应填写的值 |
-   | --- | --- |
-   | `GLADOS_COOKIE` | `Cookie` 请求头的完整值，单行 `名称=值; 名称=值` 格式，不含 `Cookie:` 前缀。 |
-   | `GLADOS_USER_AGENT` | `User-Agent` 请求头的完整值，不含 `User-Agent:` 前缀。 |
+GitHub 的调度可能延迟。任务须在默认分支 `main` 上启用；无需个人电脑在线。
 
-   优先复制请求头中的原始 Cookie 字符串，不要只复制 Cookie 表格中的某一项。若只有表格，可将该请求的全部 Cookie 按 `名称=值; 名称=值` 拼成一行；例如 `gld:sess=示例值; gld:sess.sig=示例值; koa:sess=示例值; koa:sess.sig=示例值`（仅为格式示例，实际以当前请求为准）。「没有响应 Cookie」不影响操作，这里需要的是**请求 Cookie**。
+## 凭据
 
-4. 打开仓库 [Actions Secrets 设置](https://github.com/Ancher-puppet/glados-checkin/settings/secrets/actions)：**Settings → Secrets and variables → Actions → Secrets → Repository secrets**。
-5. 点击 `GLADOS_COOKIE` 右侧的铅笔，粘贴新值并点击 **Update secret**；同样更新 `GLADOS_USER_AGENT`。若尚未创建，点击 **New repository secret**，使用上述准确名称。
-6. 前往 **Actions → GLaDOS Daily Check-in → Run workflow**，选择默认分支并启动一次新运行，查看签到结果。
+保留两项 Repository Secrets：`GLADOS_COOKIE` 和 `GLADOS_USER_AGENT`。已通过一次邮箱验证码登录建立了与云端 Chrome 相匹配的会话，并安全更新这两项。邮箱密码和验证码没有保存到仓库。
 
-若仍提示「没有权限」，检查 Cookie 是否完整、是否来自刚登录的账户；若提示 `device-mismatch`，重新从同一浏览器获取并同时更新这两项。网页本身也无法正常操作时，先解决账户或网站端问题。
+网站会检查登录设备。把 Safari 的 Cookie 搬到 Chrome，即使 Cloudflare 验证已通过，也可能被拒绝为 `device-mismatch`；只更改浏览器标识又可能使验证失败。登录过期或设备被拒绝时，需要重新建立匹配云端浏览器的登录态。不要把 Cookie 改存到公开 Variables、提交文件或日志。
 
-## 为什么看不到已保存的值？
+## 结果判断
 
-这两项存放在 **Secrets**，不是 **Variables**。GitHub 不提供已保存 Secret 原值的查看或取回功能，即使是仓库所有者也只能更新、删除；编辑框为空并不代表没有保存，API / CLI 也不能读回原值。Actions 日志通常会将匹配的 Secret 遮盖为 `***`。
+- 先查询 `/api/user/points`，只认可北京时间当天、业务为签到的流水。
+- 签到前等待官网验证完成；失败时不提交空令牌请求。
+- 新签到须由接口确认成功，并再次核对当天流水。
+- `repeated=true` 或经流水确认的旧版 `code=1` 单独报告为已签到，不算新增奖励。
+- `code=5` / `reason=turnstile`、登录失效、设备不匹配均明确失败；HTTP 200 本身不算成功。
+- 日志只记录业务结果和验证令牌是否存在，不输出 Cookie、nonce、proof 或验证令牌原值。临时浏览器目录在结束后删除。
+- 只签到，不兑换积分、不购买套餐、不参与抽奖。
 
-**Variables** 用于非敏感配置，可查看明文。Cookie 是登录凭据，应保留在 Secrets 中；当前工作流也通过 `secrets.GLADOS_COOKIE` 和 `secrets.GLADOS_USER_AGENT` 读取这两项，直接改存 Variables 不会生效。需要自行留存时，请使用密码管理器；不要把 Cookie 写进 README、提交到仓库或打印到日志。
+手动运行 **Actions → GLaDOS Daily Check-in → Run workflow**。默认使用原生 Chrome。勾选 `verify_browser` 可在今日已经签到时继续验收完整验证流程；这是诊断选项，日常无需勾选。`native_safari` 和关闭 `native_chrome` 的路径保留作对照排查，之前均未通过云端验证，不作为每日默认方案。
+
+## 实测记录
+
+| 环境 | 验证 | 网站响应 |
+| --- | --- | --- |
+| Linux WebKit | 无令牌、超时 | 重复签到，不能证明验证成功 |
+| GitHub macOS Safari | 无令牌、超时 | 重复签到，不能证明验证成功 |
+| 原生 Chrome + Safari 旧登录态 | 有效令牌、`ok` | `device-mismatch` |
+| 原生 Chrome + Safari 浏览器标识 | 未完成验证 | 没有提交签到 |
+| 原生 Chrome + 新建匹配会话 | **有效令牌、`ok`** | **已签到；严格测试通过** |
+
+本仓库严格通过记录：[43682878484](https://github.com/Ancher-puppet/glados-checkin/actions/runs/43682878484)。此前失败记录保留在 Actions 中，未将它们宣称为修复成功。
+
+此次方案参考了 [MZRidaz/GLaDOS-Auto-Checkin PR #24](https://github.com/MZRidaz/GLaDOS-Auto-Checkin/pull/24) 的原生浏览器与标准验证框交互思路，并核对了作者 [GitHub 云端首次签到记录](https://github.com/Ingress007/GLaDOS-Auto-Checkin/actions/runs/43613098333)。后者属于其他账号的证据，不能替代本账号次日首次到账验收。
+
+12 项离线测试通过，覆盖日期边界、重复签到、拒绝响应、凭据格式、脱敏和验证框选择范围。
+
+```sh
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+网站日后修改验证规则、会话过期或 GitHub 服务异常仍可能导致失败；以实际业务结果和当天流水为准。Cloudflare 的验证令牌只有短期有效性，不能保存为长期 Cookie 替代品。
