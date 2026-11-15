@@ -11,6 +11,10 @@ on:
         description: "在 GitHub macOS 云端运行原生 Safari 测试"
         type: boolean
         default: false
+      native_chrome:
+        description: "在 GitHub 云端使用原生 Chrome 完成官网验证"
+        type: boolean
+        default: true
   schedule:
     # UTC 01:07，即北京时间每天 09:07；GitHub 调度可能延迟。
     - cron: "7 1 * * *"
@@ -39,6 +43,7 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m playwright install --with-deps chromium webkit firefox
+          google-chrome --version
       - name: Install official Safari automation support
         if: ${{ inputs.native_safari }}
         run: |
@@ -50,6 +55,7 @@ jobs:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
           GLADOS_VERIFY_BROWSER: ${{ inputs.verify_browser && '1' || '0' }}
+          GLADOS_NATIVE_CHROME: ${{ (github.event_name == 'schedule' || inputs.native_chrome) && '1' || '0' }}
         run: xvfb-run -a python checkin.py
       - name: Check in through native Safari
         if: ${{ inputs.native_safari }}

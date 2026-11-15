@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from contextlib import nullcontext
 from datetime import datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -127,70 +128,84 @@ def run():
 
     cookies, ua = credentials(os.environ)
     verify = os.environ.get("GLADOS_VERIFY_BROWSER") == "1"
-    engine = browser_name(ua)
+    native = os.environ.get("GLADOS_NATIVE_CHROME") == "1"
+    engine = "原生 Chrome" if native else browser_name(ua)
     print("使用官方网页签到，浏览器引擎：" + engine, flush=True)
-    # No stealth flags, challenge replay, CAPTCHA solver, or token injection.
     with sync_playwright() as playwright:
-        browser = getattr(playwright, engine).launch(headless=False)
-        context = browser.new_context(user_agent=ua, locale="zh-CN", timezone_id="Asia/Shanghai")
-        context.add_cookies(cookies)
-        page = context.new_page()
+        from native_chrome import launch_chrome, wait_for_verification
+        manager = launch_chrome(playwright) if native else nullcontext(getattr(playwright, engine).launch(headless=False))
+        with manager as browser:
+            options = {"locale": "en-US", "timezone_id": "Asia/Shanghai"}
+            if not native:
+                options["user_agent"] = ua
+            context = browser.new_context(**options)
+            context.add_cookies(cookies)
+            page = context.new_page()
 
-        def points():
-            response = context.request.get(BASE + "/api/user/points", timeout=30000)
-            if response.status != 200:
-                raise CheckinError(f"积分查询返回 HTTP {response.status}。")
-            data = response.json()
-            if isinstance(data, dict) and data.get("code") == -2:
-                raise CheckinError("登录已失效：请同时更新仓库中的 Cookie 和 User-Agent。")
-            return data
+            def points():
+                response = context.request.get(BASE + "/api/user/points", timeout=30000)
+                if response.status != 200:
+                    raise CheckinError(f"积分查询返回 HTTP {response.status}。")
+                data = response.json()
+                if isinstance(data, dict) and data.get("code") == -2:
+                    raise CheckinError("登录已失效：请同时更新仓库中的 Cookie 和 User-Agent。")
+                return data
 
-        try:
-            page.goto(BASE + "/console/checkin", wait_until="domcontentloaded", timeout=45000)
-            before = points()
-            if checked_today(before) and not verify:
-                summary("今日已签到：已核对北京时间今日积分流水，无需重复提交。")
-                return
-            button = page.get_by_role("button", name=re.compile(r"^(check\s*in|签到)$", re.I))
-            button.wait_for(state="visible", timeout=45000)
+            try:
+                with page.expect_response(lambda response: urlsplit(response.url).path == "/api/user/checkin/challenge"
+                                          and urlsplit(response.url).netloc == "glados.cloud", timeout=45000) as pending:
+                    page.goto(BASE + "/console/checkin", wait_until="domcontentloaded", timeout=45000)
+                challenge = pending.value.json()
+                if not isinstance(challenge, dict) or challenge.get("code") != 0 or not challenge.get("nonce"):
+                    raise CheckinError("官网签到验证初始化失败，未提交签到。")
+                before = points()
+                if checked_today(before) and not verify:
+                    summary("今日已签到：已核对北京时间今日积分流水，无需重复提交。")
+                    return
+                button = page.get_by_role("button", name=re.compile(r"^(check\s*in|签到)$", re.I))
+                button.wait_for(state="visible", timeout=45000)
+                if native:
+                    button.scroll_into_view_if_needed()
+                    if not wait_for_verification(page, bool(challenge.get("turnstile"))):
+                        raise CheckinError("云端 Chrome 未完成官网验证，未提交签到。")
+                    print("官网验证已就绪，即将由原页面提交签到。", flush=True)
 
-            def is_checkin(response):
-                parsed = urlsplit(response.url)
-                return (parsed.scheme == "https" and parsed.netloc == "glados.cloud"
-                        and parsed.path == "/api/user/checkin" and response.request.method == "POST")
+                def is_checkin(response):
+                    parsed = urlsplit(response.url)
+                    return (parsed.scheme == "https" and parsed.netloc == "glados.cloud"
+                            and parsed.path == "/api/user/checkin" and response.request.method == "POST")
 
-            with page.expect_response(is_checkin, timeout=150000) as captured:
-                button.click(timeout=15000)
-            response = captured.value
-            # Log presence/state only, never challenge, proof, or CAPTCHA token values.
-            info = verification_info(response.request.post_data_json)
-            print("网页验证状态：" + json.dumps(info, ensure_ascii=False), flush=True)
-            if response.status != 200:
-                raise CheckinError(f"签到接口返回 HTTP {response.status}。")
-            data = response.json()
-            if not isinstance(data, dict):
-                raise CheckinError("签到接口未返回预期 JSON 对象。")
-            safe = {k: (redact(data[k], cookies) if isinstance(data.get(k), str) else
-                        data.get(k) if isinstance(data.get(k), (int, float, bool, type(None))) else "[OMITTED]")
-                    for k in ("code", "reason", "message", "repeated", "points")}
-            print("签到响应：" + json.dumps(safe, ensure_ascii=False), flush=True)
-            result = classify(data)
-            if result == "needs_confirmation":
-                if not checked_today(points()):
-                    raise CheckinError("code=1，但积分流水未确认今日签到，按失败处理。")
-                result = "already_checked"
-            if verify and not verified_browser(info):
-                raise CheckinError("今日签到状态已核对，但云端页面未完成挑战/验证。重复签到响应不能证明每天无人值守签到可用。")
-            if result == "already_checked":
-                summary("官方网页返回今日已签到；本次未新增签到奖励。")
-            else:
-                summary("官方网页的签到接口已确认成功。")
-        except BrowserTimeout:
-            raise CheckinError("网页等待超时：可能需要人工验证、登录已失效或页面发生变化；没有确认签到成功。") from None
-        finally:
-            context.close()
-            browser.close()
-
+                with page.expect_response(is_checkin, timeout=150000) as captured:
+                    button.click(timeout=15000)
+                response = captured.value
+                # Log presence/state only, never challenge, proof, or CAPTCHA token values.
+                info = verification_info(response.request.post_data_json)
+                print("网页验证状态：" + json.dumps(info, ensure_ascii=False), flush=True)
+                if response.status != 200:
+                    raise CheckinError(f"签到接口返回 HTTP {response.status}。")
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise CheckinError("签到接口未返回预期 JSON 对象。")
+                safe = {k: (redact(data[k], cookies) if isinstance(data.get(k), str) else
+                            data.get(k) if isinstance(data.get(k), (int, float, bool, type(None))) else "[OMITTED]")
+                        for k in ("code", "reason", "message", "repeated", "points")}
+                print("签到响应：" + json.dumps(safe, ensure_ascii=False), flush=True)
+                result = classify(data)
+                if result == "needs_confirmation":
+                    if not checked_today(points()):
+                        raise CheckinError("code=1，但积分流水未确认今日签到，按失败处理。")
+                    result = "already_checked"
+                if verify and not verified_browser(info):
+                    raise CheckinError("今日签到状态已核对，但云端页面未完成挑战/验证。重复签到响应不能证明每天无人值守签到可用。")
+                if result == "already_checked":
+                    summary("官方网页返回今日已签到；本次未新增签到奖励。")
+                else:
+                    summary("官方网页的签到接口已确认成功。")
+            except BrowserTimeout:
+                raise CheckinError("网页等待超时：可能需要人工验证、登录已失效或页面发生变化；没有确认签到成功。") from None
+            finally:
+                context.close()
+                browser.close()
 
 if __name__ == "__main__":
     try:
