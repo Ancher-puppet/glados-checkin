@@ -100,6 +100,20 @@ def classify(data):
     raise CheckinError("服务器没有确认签到成功，请查看上方脱敏后的业务错误。")
 
 
+def verification_info(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    state = payload.get("tsState")
+    return {"challenge_present": bool(payload.get("nonce")),
+            "turnstile_token_present": bool(payload.get("turnstile")),
+            "verification_state": state if state in ("ok", "off", "timeout", "error") else "unknown"}
+
+
+def verified_browser(info):
+    return (info["challenge_present"] and
+            (info["verification_state"] == "off" or
+             (info["verification_state"] == "ok" and info["turnstile_token_present"])))
+
+
 def summary(text):
     print(text, flush=True)
     filename = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -148,6 +162,9 @@ def run():
             with page.expect_response(is_checkin, timeout=150000) as captured:
                 button.click(timeout=15000)
             response = captured.value
+            # Log presence/state only, never challenge, proof, or CAPTCHA token values.
+            info = verification_info(response.request.post_data_json)
+            print("网页验证状态：" + json.dumps(info, ensure_ascii=False), flush=True)
             if response.status != 200:
                 raise CheckinError(f"签到接口返回 HTTP {response.status}。")
             data = response.json()
@@ -162,6 +179,8 @@ def run():
                 if not checked_today(points()):
                     raise CheckinError("code=1，但积分流水未确认今日签到，按失败处理。")
                 result = "already_checked"
+            if verify and not verified_browser(info):
+                raise CheckinError("今日签到状态已核对，但云端页面未完成挑战/验证。重复签到响应不能证明每天无人值守签到可用。")
             if result == "already_checked":
                 summary("官方网页返回今日已签到；本次未新增签到奖励。")
             else:

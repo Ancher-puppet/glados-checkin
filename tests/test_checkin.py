@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from checkin import CheckinError, checked_today, classify, credentials, redact
+from checkin import CheckinError, checked_today, classify, credentials, redact, verification_info, verified_browser
 
 
 class ResultTests(unittest.TestCase):
@@ -49,6 +49,19 @@ class ResultTests(unittest.TestCase):
     def test_secret_redaction(self):
         cookies = [{"value": 'secret"value'}]
         self.assertEqual(redact('echo secret"value', cookies), "echo [REDACTED]")
+
+    def test_repeated_checkin_cannot_prove_failed_verification(self):
+        for payload in ({"nonce": "private", "tsState": "timeout"},
+                        {"nonce": "private", "tsState": "error"},
+                        {"nonce": "private", "tsState": "ok"}, {}):
+            self.assertFalse(verified_browser(verification_info(payload)))
+
+    def test_verification_diagnostics_never_include_secrets(self):
+        info = verification_info({"nonce": "secret-nonce", "proof": "secret-proof",
+                                  "turnstile": "secret-token", "tsState": "ok"})
+        self.assertTrue(verified_browser(info))
+        self.assertNotIn("secret", str(info))
+        self.assertTrue(verified_browser(verification_info({"nonce": "private", "tsState": "off"})))
 
 
 if __name__ == "__main__":

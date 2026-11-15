@@ -1,6 +1,35 @@
 # glados-checkin
 
-通过 GitHub Actions 自动签到，默认每天北京时间 09:07 运行，也可手动触发。
+通过 GitHub Actions 在云端运行官方签到网页，默认每天北京时间 09:07 运行，也可手动触发；不依赖个人电脑开机。GitHub 定时调度可能延迟。
+
+## 浏览器方案与限制
+
+此版本使用 Playwright 打开 `https://glados.cloud/console/checkin`，导入已有仓库 Secrets 中的登录 Cookie，并点击官方签到按钮。挑战、proof 和 Turnstile 均由官网原有页面处理。脚本不重放挑战、不伪造验证令牌、不自动操作验证码，也不隐藏浏览器自动化特征。
+
+**这是需要真实环境验收的浏览器方案，不保证 Cloudflare 允许 GitHub 托管运行器自动签到。** 若返回 `code=5` / `reason=turnstile` 或网页等待超时，运行明确失败，不会显示签到成功。Cloudflare 说明自动化测试工具可能被识别为机器人：[官方说明](https://developers.cloudflare.com/turnstile/troubleshooting/testing/)。
+
+- 通过 `/api/user/points` 的北京时间今日签到流水预检，已签到时跳过提交。
+- `code=0` 表示接口确认成功；`repeated=true` 单独显示为今日已签到，不算新增奖励。
+- 旧版 `code=1` 需要今日签到流水佐证；HTTP 200 或仅打开页面均不算成功。
+- 手动运行时可勾选 `verify_browser`，即使今日已有流水也测试官方页面流程。重复签到测试不证明未来首次签到一定成功。
+- Cookie 和 User-Agent 仍只保存在 GitHub Secrets；不上传浏览器档案、Cookie、页面截图或网页源码。
+- 仅操作签到，不兑换积分、不购买套餐、不参与积分抽奖。
+
+安装依赖及测试：
+
+```sh
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+python -m playwright install --with-deps chromium webkit firefox
+```
+
+工作流在 Linux 虚拟显示环境下运行有界面的浏览器。浏览器引擎按现有 User-Agent 选择；同一次登录的 Cookie 和 User-Agent 必须配套。若登录态失效，仍需更新两项 Secret；浏览器方案不能修复过期登录态。
+
+## `code=5` 与 Cloudflare 验证
+
+`HTTP 200`、`code=5`、`Cloudflare verification failed. Nothing was recorded` 表示签到业务被拒绝、没有记录。与 `code=-2` 的登录失效不同，单纯换 Cookie 或增加重试不能补齐缺失的验证。
+
+若本方案在 Actions 中仍被验证系统拒绝，应使用网站官方允许的自动签到接口（若提供）或正常网页人工签到。不要把一次 Turnstile 令牌保存为长期 Secret：令牌有效期为五分钟，设计为单次使用，详见 [Cloudflare 官方验证说明](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/)。
 
 ## 更新 Cookie 和 User-Agent
 
