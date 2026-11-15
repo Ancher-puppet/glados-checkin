@@ -135,9 +135,7 @@ def run():
         from native_chrome import launch_chrome, wait_for_verification
         manager = launch_chrome(playwright) if native else nullcontext(getattr(playwright, engine).launch(headless=False))
         with manager as browser:
-            options = {"locale": "en-US", "timezone_id": "Asia/Shanghai"}
-            if not native:
-                options["user_agent"] = ua
+            options = {"user_agent": ua, "locale": "en-US", "timezone_id": "Asia/Shanghai"}
             context = browser.new_context(**options)
             context.add_cookies(cookies)
             page = context.new_page()
@@ -205,7 +203,8 @@ def run():
                 raise CheckinError("网页等待超时：可能需要人工验证、登录已失效或页面发生变化；没有确认签到成功。") from None
             finally:
                 context.close()
-                browser.close()
+                if not native:
+                    browser.close()
 
 if __name__ == "__main__":
     try:
