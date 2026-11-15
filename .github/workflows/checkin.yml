@@ -2,8 +2,13 @@ name: GLaDOS Daily Check-in
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_browser:
+        description: "即使今日已签到，也测试一次官方网页签到流程"
+        type: boolean
+        default: false
   schedule:
-    # UTC 01:07，即北京时间每天 09:07
+    # UTC 01:07，即北京时间每天 09:07；GitHub 调度可能延迟。
     - cron: "7 1 * * *"
 
 permissions:
@@ -15,112 +20,23 @@ concurrency:
 
 jobs:
   checkin:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Check in
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Check result handling
+        run: python -m unittest discover -s tests -v
+      - name: Install browser
+        run: |
+          python -m pip install -r requirements.txt
+          python -m playwright install --with-deps chromium webkit firefox
+      - name: Check in through the official page
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.error
-          import urllib.request
-
-          def fail(message):
-              print(f"签到失败：{message}")
-              sys.exit(1)
-
-          cookie = os.environ.get("GLADOS_COOKIE", "").strip()
-          user_agent = os.environ.get("GLADOS_USER_AGENT", "").strip()
-
-          # 只检查必要条件，不限定 Cookie 名称或顺序。
-          if not cookie:
-              fail("请设置 GLADOS_COOKIE。")
-          if "\n" in cookie or "\r" in cookie:
-              fail("GLADOS_COOKIE 必须是一行，请复制请求头中 Cookie 的完整值。")
-          if cookie.lower().startswith("cookie:"):
-              cookie = cookie.split(":", 1)[1].strip()
-          if not cookie or "=" not in cookie:
-              fail("GLADOS_COOKIE 应为 name=value; name=value 格式。")
-
-          if not user_agent:
-              fail("请设置 GLADOS_USER_AGENT，值必须来自取得 Cookie 的同一个浏览器。")
-          if "\n" in user_agent or "\r" in user_agent:
-              fail("GLADOS_USER_AGENT 必须是一行。")
-
-          # 如果响应意外包含凭据，打印前遮盖。
-          private_values = [cookie]
-          for item in cookie.split(";"):
-              if "=" in item:
-                  value = item.split("=", 1)[1].strip()
-                  if value:
-                      private_values.append(value)
-
-          def redact(value):
-              text = str(value)
-              for secret in sorted(private_values, key=len, reverse=True):
-                  text = text.replace(secret, "[REDACTED]")
-              return text
-
-          request = urllib.request.Request(
-              "https://glados.cloud/api/user/checkin",
-              data=json.dumps({"token": "glados.one"}).encode("utf-8"),
-              headers={
-                  "Content-Type": "application/json",
-                  "Accept": "application/json",
-                  "Cookie": cookie,
-                  "User-Agent": user_agent,
-              },
-              method="POST",
-          )
-
-          try:
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  status = response.status
-                  body = response.read(1024 * 1024).decode("utf-8")
-          except urllib.error.HTTPError as error:
-              fail(f"HTTP {error.code}，请检查网站是否可访问或请求是否被拒绝。")
-          except (urllib.error.URLError, TimeoutError, OSError):
-              fail("网络连接失败或超时，请稍后手动启动一次新的工作流。")
-          except Exception as error:
-              fail(f"无法完成请求（{type(error).__name__}），请检查 Secret 格式。")
-
-          print(f"HTTP 状态码：{status}")
-
-          try:
-              data = json.loads(body)
-          except (ValueError, UnicodeError):
-              fail("服务器返回了非 JSON 内容，可能是网站错误或验证页面。")
-
-          if not isinstance(data, dict):
-              fail("服务器响应格式异常。")
-
-          code = data.get("code")
-          message = data.get("message") or data.get("msg") or ""
-          print("GLaDOS code：", redact(code))
-          print("GLaDOS message：", json.dumps(redact(message), ensure_ascii=False))
-
-          if code == 4:
-              reason = data.get("reason", "")
-              print("拒绝原因：", json.dumps(redact(reason), ensure_ascii=False))
-              if reason == "device-mismatch":
-                  print("登录设备：", json.dumps(redact(data.get("loginDevice", "")), ensure_ascii=False))
-                  print("请求设备：", json.dumps(redact(data.get("currentDevice", "")), ensure_ascii=False))
-                  fail("设备不匹配。请确认 Cookie 和 User-Agent 来自同一个浏览器；必要时重新登录并同时更新两项 Secret。")
-              fail("服务器检测到自动签到并拒绝，请按提示重新登录；持续出现时需确认官方是否支持自动签到。")
-
-          if code == -2:
-              fail("没有权限，请重新登录 glados.cloud 并更新完整 Cookie。")
-
-          if type(code) is int and code in (0, 1):
-              print("签到请求已被服务器接受。")
-              sys.exit(0)
-
-          fail("服务器未返回预期成功码，请依据上面的 code 和 message 排查。")
-          PY
+          GLADOS_VERIFY_BROWSER: ${{ inputs.verify_browser && '1' || '0' }}
+        run: xvfb-run -a python checkin.py
