@@ -150,16 +150,16 @@ def run():
                 return data
 
             try:
+                before = points()
+                if checked_today(before) and not verify:
+                    summary("今日已签到：已核对北京时间今日积分流水，无需重复提交。")
+                    return
                 with page.expect_response(lambda response: urlsplit(response.url).path == "/api/user/checkin/challenge"
                                           and urlsplit(response.url).netloc == "glados.cloud", timeout=45000) as pending:
                     page.goto(BASE + "/console/checkin", wait_until="domcontentloaded", timeout=45000)
                 challenge = pending.value.json()
                 if not isinstance(challenge, dict) or challenge.get("code") != 0 or not challenge.get("nonce"):
                     raise CheckinError("官网签到验证初始化失败，未提交签到。")
-                before = points()
-                if checked_today(before) and not verify:
-                    summary("今日已签到：已核对北京时间今日积分流水，无需重复提交。")
-                    return
                 button = page.get_by_role("button", name=re.compile(r"^(check\s*in|签到)$", re.I))
                 button.wait_for(state="visible", timeout=45000)
                 if native:
@@ -189,11 +189,13 @@ def run():
                         for k in ("code", "reason", "message", "repeated", "points")}
                 print("签到响应：" + json.dumps(safe, ensure_ascii=False), flush=True)
                 result = classify(data)
+                if result == "success" and not checked_today(points()):
+                    raise CheckinError("接口返回成功，但积分流水尚未确认今日签到；不宣称已到账。")
                 if result == "needs_confirmation":
                     if not checked_today(points()):
                         raise CheckinError("code=1，但积分流水未确认今日签到，按失败处理。")
                     result = "already_checked"
-                if verify and not verified_browser(info):
+                if (native or verify) and not verified_browser(info):
                     raise CheckinError("今日签到状态已核对，但云端页面未完成挑战/验证。重复签到响应不能证明每天无人值守签到可用。")
                 if result == "already_checked":
                     summary("官方网页返回今日已签到；本次未新增签到奖励。")

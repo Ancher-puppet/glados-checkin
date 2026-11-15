@@ -18,6 +18,11 @@ on:
   schedule:
     # UTC 01:07，即北京时间每天 09:07；GitHub 调度可能延迟。
     - cron: "7 1 * * *"
+    # 下午和晚间补漏；已确认今日流水时直接退出，不重复签到。
+    - cron: "17 7 * * *"
+    - cron: "27 13 * * *"
+    # 月度仓库活动，避免公开仓库长期无提交导致定时工作流停用。
+    - cron: "37 0 1 * *"
 
 permissions:
   contents: read
@@ -28,6 +33,7 @@ concurrency:
 
 jobs:
   checkin:
+    if: github.event_name != 'schedule' || github.event.schedule != '37 0 1 * *'
     runs-on: ${{ inputs.native_safari && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -68,3 +74,18 @@ jobs:
           GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
           GLADOS_VERIFY_BROWSER: ${{ inputs.verify_browser && '1' || '0' }}
         run: python safari_checkin.py
+
+  keepalive:
+    if: github.event_name == 'schedule' && github.event.schedule == '37 0 1 * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Maintain scheduled workflow activity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -m 'Keep daily check-in schedule active'
+          git push origin HEAD:main
